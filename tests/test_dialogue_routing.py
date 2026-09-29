@@ -52,6 +52,7 @@ from ova.dialogue import (                                   # noqa: E402
     _is_continue_command,
     _is_stop_command,
     _playback_from_text,
+    play_asset,
     run_dialogue_round,
 )
 from ova.engines.base import EngineError, Reply               # noqa: E402
@@ -206,6 +207,28 @@ def test_unexpected_engine_bug_is_contained():
                                 engine=engine)
     assert state is None
     assert backend.played_names() == ["fallback_net.wav"]
+
+
+def test_fallback_follows_current_language_and_explicit_override(tmp_path):
+    root = tmp_path / "assets"
+    folder = root / "fallback"
+    folder.mkdir(parents=True)
+    (folder / "fallback_net.wav").write_bytes(b"zh")
+    (folder / "fallback_net_en.wav").write_bytes(b"en")
+    backend = FakeBackend()
+    cfg = {"dialogue_lang_file": str(tmp_path / "lang.state")}
+    lang_state = tmp_path / "lang.state"
+    # Test with the real language state reader, including the default.
+    lang_state.write_text("en\n")
+    play_asset(backend, root, "fallback_net.wav", cfg)
+    play_asset(backend, root, "fallback_net.wav", cfg, lang="zh")
+    lang_state.write_text("zh\n")
+    play_asset(backend, root, "fallback_net.wav", cfg)
+    (folder / "fallback_net_en.wav").unlink()
+    lang_state.write_text("en\n")
+    play_asset(backend, root, "fallback_net.wav", cfg)
+    assert backend.played_names() == [
+        "fallback_net_en.wav", "fallback_net.wav", "fallback_net.wav", "fallback_net.wav"]
 
 
 # --- round-level wiring ------------------------------------------------------

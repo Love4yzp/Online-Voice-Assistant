@@ -193,15 +193,19 @@ STOP_WORDS = ("停止", "停一下", "停下", "别说了", "不要说了", "先
 CONTINUE_WORDS = ("继续", "接着", "继续讲", "接着讲", "continue", "goon", "go on")
 
 
-def play_asset(backend, root: Path, name: str) -> None:
-    """Play a fallback prompt from <root>/fallback/<name> (kept out of the
-    random wake-acknowledgement pool that scans <root>/*.wav only)."""
-    path = root / "fallback" / name
+def play_asset(backend, root: Path, name: str, cfg: dict | None = None,
+               lang: str | None = None) -> None:
+    """Play a fallback prompt in the dialogue language, including injected turns."""
+    chosen = lang or ova_lang.current(cfg or {})
+    path = root / "fallback" / (name.removesuffix(".wav") + "_en.wav" if chosen == "en" else name)
+    if not path.is_file() and chosen == "en":
+        LOG.warning("missing English fallback asset %s; using Chinese", path)
+        path = root / "fallback" / name
     if not path.is_file():
         LOG.warning("missing fallback asset %s", path)
         return
-    LOG.info("PLAY_FALLBACK file=%s", name)
-    svc_event("dialog", f"提示音: {name}", "warn")
+    LOG.info("PLAY_FALLBACK file=%s", path.name)
+    svc_event("dialog", f"提示音: {path.name}", "warn")
     backend.play_file(path)
 
 
@@ -607,7 +611,7 @@ def _playback_from_text(
             if not intro.audio_path.is_file():
                 LOG.error("solution intro audio missing: %s", intro.audio_path)
                 _mark("idle", f"{intro.id} audio missing")
-                play_asset(backend, root, "fallback_question.wav")
+                play_asset(backend, root, "fallback_question.wav", cfg, effective)
                 return None
             _mark("solution_intro", f"{intro.id}:{intro.language}")
             return PlaybackState(
@@ -629,25 +633,25 @@ def _playback_from_text(
     if samples is None and not (text and engine.needs_transcript):
         LOG.warning("ENGINE_NO_AUDIO engine=%s", engine.name)
         _mark("idle", f"no audio for {engine.name}")
-        play_asset(backend, root, "fallback_question.wav")
+        play_asset(backend, root, "fallback_question.wav", cfg, effective)
         return None
 
     if cfg.get("ack_before_reply", False):
-        play_asset(backend, root, "ack_think.wav")
+        play_asset(backend, root, "ack_think.wav", cfg, effective)
     try:
         reply = engine.respond(samples, text, {**cfg, "reply_lang": effective})
     except EngineError as exc:
         LOG.error("ENGINE_FAILED engine=%s: %s", engine.name, exc)
         svc_event("dialog", f"引擎失败({engine.name}): {exc}"[:140], "warn")
         _mark("idle", f"engine failed {engine.name}: {exc}"[:120])
-        play_asset(backend, root, "fallback_net.wav")
+        play_asset(backend, root, "fallback_net.wav", cfg, effective)
         return None
     except Exception as exc:  # noqa: BLE001 - a broken engine must not kill the service
         LOG.error("ENGINE_ERROR engine=%s %s: %s",
                   engine.name, type(exc).__name__, exc)
         svc_event("dialog", f"引擎异常({engine.name}): {type(exc).__name__}", "warn")
         _mark("idle", f"engine error {engine.name}: {type(exc).__name__}")
-        play_asset(backend, root, "fallback_net.wav")
+        play_asset(backend, root, "fallback_net.wav", cfg, effective)
         return None
     _mark("chat", f"engine={engine.name}")
     return _state_from_reply(engine, reply)
@@ -668,7 +672,8 @@ def _run_playback_loop(
         except Exception as exc:  # noqa: BLE001 - keep wake service alive
             LOG.error("playback failed: %s", exc)
             _cleanup_state(current)
-            play_asset(backend, root, "fallback_question.wav")
+            play_asset(backend, root, "fallback_question.wav", cfg,
+                       current.done_lang)
             return
         current.offset_s = result.elapsed_s
         if result.completed:
@@ -726,19 +731,19 @@ def run_dialogue_round(backend, root: Path, asr: LocalAsr, cfg: dict,
         if samples is None:
             if attempt == 1:
                 LOG.info("EMPTY_LISTEN attempt=%d retry with prompt", attempt)
-                play_asset(backend, root, "fallback_listen.wav")
+                play_asset(backend, root, "fallback_listen.wav", cfg)
                 continue
             LOG.info("EMPTY_LISTEN attempt=2 give up")
-            play_asset(backend, root, "fallback_question.wav")
+            play_asset(backend, root, "fallback_question.wav", cfg)
             return
         if engine.needs_transcript:
             text = asr.transcribe(samples)
             if not text:
                 if attempt == 1:
                     LOG.info("ASR_EMPTY attempt=%d retry", attempt)
-                    play_asset(backend, root, "fallback_listen.wav")
+                    play_asset(backend, root, "fallback_listen.wav", cfg)
                     continue
-                play_asset(backend, root, "fallback_question.wav")
+                play_asset(backend, root, "fallback_question.wav", cfg)
                 return
         break
     else:
