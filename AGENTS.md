@@ -114,3 +114,4 @@
 | 2026-09-11 | `main` | 合并 `dev` 到 `main`，主分支收口本轮唤醒、VAD、ASR、双引擎、展厅讲解与待机动作改动。 |
 | 2026-09-15 | `main` | 新增外部文本输入入口：`ova-wake` 内置 `POST /inject`（文本当识别结果，复用停止/继续/三主题讲解/普通问答路由，播放中注入先打断当前播放）与 `POST /wake`（当唤醒命中起一轮对话）；`WAKE_INJECT_PORT` 默认 8090、`0`=关闭，仅监听本机，无新依赖。 |
 | 2026-09-15 | `main` | 新增持久对话语言切换：展厅旋钮长按 → `POST /lang`（中↔英，`GET /lang` 读当前值），状态存 `dialogue_lang_file`（默认 `/tmp/ova_lang.state`），回退 `dialogue_lang`（默认 `zh`）；切换后讲解选版与 `pipeline` 的 LLM 回答语言都跟随（`reply_lang` → `llm.system_prompt()`），TTS 音色与 `e2e` 引擎不变。新增 `src/ova/lang.py` 与 `tests/test_lang.py`。 |
+| 2026-09-29 | `feat/motion-v2` | 修英文切换不生效：`en` 改用独立英文人设 `EN_SYSTEM_PROMPT`（旧的“中文人设 + 追加英文句”自相矛盾，模型跟着提问语言走，中文问句一律中文答）；`pipeline.ensure_reply_language()` 增加中文回答自动重问一次（`LANG_RETRY`，中文占比阈值 0.2）。真机已验证中文提问 3/3 英文回答，zh 口径 byte 不变。见 `docs/dialogue-language-switch-2026-09-15.md`。 |

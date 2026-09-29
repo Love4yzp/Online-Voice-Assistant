@@ -65,11 +65,29 @@ curl -s http://127.0.0.1:8090/lang                            # 读当前语言
 | 环节 | 行为 |
 |---|---|
 | 讲解选版 | 显式 `lang`（`POST /inject {...,"lang":"en"}`）优先；否则用**现场切换过的语言**（状态文件，或特意配成非默认的 `dialogue_lang`）；都没指定时**仍按关键词语言**（`介绍一下智慧零售`→中文、`introduce smart retail`→英文），与语音链路的历史行为一致 |
-| LLM 回答（`engine=pipeline`） | `reply_lang` 透传给引擎；`en` 时 system prompt 在中文人设后追加 `Answer in English, conversational, ≤60 words, no markdown or lists.`，`zh`/未设定保持原中文口径 |
+| LLM 回答（`engine=pipeline`） | `reply_lang` 透传给引擎；`en` 时 system prompt 换成**独立英文人设** `EN_SYSTEM_PROMPT`（不再在中文人设后追加英文句，见下文“为什么换人设”），`zh`/未设定保持原中文口径 byte for byte |
+| 英文兜底 | EN 模式下模型仍回中文（中文占比 ≥ `LANG_RETRY_CJK_RATIO=0.2`）时，`ensure_reply_language()` 追加一轮 assistant/user 提醒重问一次；只重试一次，失败就用重试结果，日志 `LANG_RETRY` |
 | 天气工具轮 | 复用同一份 system message，所以工具查完后的总结也是同一语言 |
 | 语音链路 | 与注入文本共用 `_playback_from_text()`，所以"切到英文后说中文关键词"同样会播英文讲解 |
 | `engine=e2e`（GLM-4-Voice） | **不跟随**：音频进音频出，语言由模型自己决定（见已知限制） |
 | TTS | 音色不参与（仍是单一音色 `TTS_VOICE`，默认 Cherry），只切文字语言 |
+
+### 为什么换人设（2026-09-29）
+
+原实现 `en = SYSTEM_PROMPT + " Answer in English…"`：中文人设里那句
+“**用中文口语化回答**”和追加的英文指令互相矛盾，qwen-flash 会跟着**提问语言**走，
+结果英文只在“用户说英文”时生效——展厅里用中文问句就会得到中文回答，旋钮切英文形同虚设。
+真机实测（同一个 `ask_with_weather`）：
+
+| 提示词 | “介绍一下智慧空间” | “你好，你是谁？” |
+| --- | --- | --- |
+| 旧（中文人设 + 追加英文句） | 中文 | 中文 |
+| 新（独立英文人设） | 英文 | 英文 |
+
+对应改动：`ova/llm.py` 新增 `EN_SYSTEM_PROMPT`（可用 `QWEN_SYSTEM_PROMPT_EN` 覆盖，
+保留 `query_weather` 强制调用要求），`system_prompt("en")` 返回它；
+`ova/engines/pipeline.py` 增加 `ensure_reply_language()` 兜底。
+实测提示词加强后仍非 100%（中文产品名 + 中文问句偶发中文回答），所以兜底这层不能省。
 
 ## 持久化位置与"重启是否保留"
 

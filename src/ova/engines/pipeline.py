@@ -10,11 +10,13 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import time
 from pathlib import Path
 
 from ova.config import svc_event
 from ova.engines.base import EngineError, Reply
+from ova.lang import normalise as normalise_lang
 from ova.llm import CloudError, chat_once, system_prompt
 from ova.tools import WEATHER_TOOL, load_tool_calls, query_weather
 from ova.tts import synthesize
@@ -38,13 +40,46 @@ def clip(text: str, maxlen: int = 130) -> str:
     return cut
 
 
+CJK_RE = re.compile(r"[\u3400-\u9fff]")
+LANG_RETRY_MESSAGE = "Answer again in English only, with no Chinese characters."
+# 英文模式下小模型偶尔仍用中文作答（2026-09-29：中文提问 + 中文产品名时复现），
+# 回答里中文占比超过这个比例就再要一次英文；只重试一次，失败就用重试结果。
+LANG_RETRY_CJK_RATIO = 0.2
+
+
+def ensure_reply_language(reply: str, lang: str | None,
+                          messages: list[dict]) -> str:
+    """Re-ask once when an English turn still comes back in Chinese.
+
+    ``messages`` 是这一轮已经用过的对话（含工具结果），重试只追加一轮
+    assistant/user 提醒，不让模型重新跑工具。
+    """
+    if not reply or normalise_lang(lang) != "en":
+        return reply
+    ratio = len(CJK_RE.findall(reply)) / len(reply)
+    if ratio < LANG_RETRY_CJK_RATIO:    # 偶尔夹一个中文词不算跑偏
+        return reply
+    LOG.warning("LANG_RETRY reply not in English (cjk=%.2f), asking once more",
+                ratio)
+    try:
+        message = chat_once(messages + [
+            {"role": "assistant", "content": reply},
+            {"role": "user", "content": LANG_RETRY_MESSAGE},
+        ])
+    except CloudError as exc:
+        LOG.warning("LANG_RETRY failed: %s", exc)
+        return reply
+    return (message.get("content") or "").strip() or reply
+
+
 def ask_with_weather(text: str, lang: str | None = None) -> str:
     """Qwen with a weather tool: answer plain, or fetch live weather and
     compose a short spoken summary from the fetched facts.
 
     ``lang`` is the dialogue language of this turn (``reply_lang``); ``en``
-    asks for an English answer. The same system message is reused for the tool
-    round, so the weather summary keeps the requested language too.
+    asks for an English answer (regenerated once if the model ignores it).
+    The same system message is reused for the tool round, so the weather
+    summary keeps the requested language too.
     """
     messages = [
         {"role": "system", "content": system_prompt(lang)},
@@ -56,7 +91,7 @@ def ask_with_weather(text: str, lang: str | None = None) -> str:
         reply = (first.get("content") or "").strip()
         if not reply:
             raise CloudError("empty assistant reply")
-        return reply
+        return ensure_reply_language(reply, lang, messages)
     # Tool round: run every requested tool, then ask Qwen to compose.
     messages.append(first)
     for name, args, call_id in calls:
@@ -76,7 +111,7 @@ def ask_with_weather(text: str, lang: str | None = None) -> str:
         raise CloudError("empty assistant reply after tool call")
     LOG.info("QWEN_TOOL_ROUND city=%s", ", ".join(
         str(a.get("city_slug")) for _, a, _ in calls))
-    return reply
+    return ensure_reply_language(reply, lang, messages)
 
 
 class PipelineEngine:
