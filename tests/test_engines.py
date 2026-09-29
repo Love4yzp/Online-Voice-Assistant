@@ -100,6 +100,36 @@ def test_clip_cuts_at_sentence_boundary():
     assert out.endswith("。")
 
 
+def test_clip_english_does_not_append_chinese_punctuation():
+    text = "A reply without any sentence boundary that is deliberately long " * 4
+    assert pipe.clip(text, maxlen=40).endswith(".")
+
+
+def test_weather_tool_follows_dialogue_language_without_network():
+    from ova import tools
+    from urllib.parse import parse_qs, urlsplit
+
+    seen = []
+
+    class Response:
+        def __enter__(self):
+            return self
+        def __exit__(self, *exc):
+            pass
+        def read(self):
+            return b"Hangzhou: Clear, +23C, humidity 70%, wind 5km/h"
+
+    def urlopen(url, timeout=12.0):
+        seen.append(parse_qs(urlsplit(url).query))
+        return Response()
+
+    with patch(tools.urllib.request, urlopen=urlopen):
+        assert "humidity" in tools.query_weather("Hangzhou", lang="en")
+        assert "杭州" in tools.query_weather("Hangzhou")
+    assert seen[0]["lang"] == ["en"]
+    assert seen[1]["lang"] == ["zh"]
+
+
 def test_ask_with_weather_plain_reply():
     with patch(pipe, chat_once=lambda messages, tools=None, timeout=30.0: {
             "content": "杭州今天小雨。"}):
@@ -118,7 +148,8 @@ def test_ask_with_weather_runs_tool_round():
                              "arguments": '{"city_slug": "Hangzhou"}'}}]}
         return {"content": "杭州 23 度，小雨。"}
 
-    with patch(pipe, chat_once=fake_chat, query_weather=lambda slug: f"{slug}: 小雨 23C"):
+    with patch(pipe, chat_once=fake_chat,
+               query_weather=lambda slug, lang=None: f"{slug}: 小雨 23C"):
         reply = pipe.ask_with_weather("杭州天气怎么样")
     assert reply == "杭州 23 度，小雨。"
     assert len(calls) == 2
@@ -164,9 +195,11 @@ def test_ask_with_weather_uses_the_reply_language():
                              "arguments": '{"city_slug": "Hangzhou"}'}}]}
         return {"content": "Hangzhou, 23C, light rain."}
 
+    weather_langs = []
     with patch(pipe, chat_once=fake_chat,
-               query_weather=lambda slug: f"{slug}: light rain 23C"):
+               query_weather=lambda slug, lang=None: weather_langs.append(lang) or f"{slug}: light rain 23C"):
         reply = pipe.ask_with_weather("杭州天气怎么样", "en")
+    assert weather_langs == ["en"]
     assert reply == "Hangzhou, 23C, light rain."
     assert calls[0][0]["content"] == EN_SYSTEM_PROMPT   # 英文人设（含天气要求）
     assert calls[1][0] == calls[0][0]        # 工具轮复用同一份 system message

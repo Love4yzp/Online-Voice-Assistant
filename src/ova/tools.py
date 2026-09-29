@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Live weather tool for the Jarvis dialogue (no API key required).
 
-Uses https://wttr.in compact format and returns a short Chinese line,
-e.g. "杭州: 小雨, +23°C, 湿度86%, 风16km/h".
+Uses https://wttr.in compact format and returns a short line in the dialogue
+language, e.g. "杭州: 小雨, +23°C, 湿度86%, 风16km/h".
 """
 
 from __future__ import annotations
@@ -13,6 +13,8 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+
+from ova.lang import normalise
 
 LOG = logging.getLogger("dialogue.weather")
 
@@ -44,15 +46,18 @@ CITY_ZH = {
 }
 
 
-def query_weather(city_slug: str, timeout: float = 12.0) -> str:
-    """Fetch current weather; returns a short Chinese description string.
+def query_weather(city_slug: str, timeout: float = 12.0,
+                  lang: str | None = None) -> str:
+    """Fetch current weather; return a short line in the chosen language.
 
     Tries twice (transient network hiccups are common from the robot).
     """
     slug = (city_slug or "Hangzhou").strip()
+    english = normalise(lang) == "en"
     query = urllib.parse.urlencode({
-        "format": "%l: %C, %t, 湿度%h, 风%w",  # 中文值会被正确百分号编码
-        "lang": "zh",
+        "format": "%l: %C, %t, humidity %h, wind %w" if english else
+                  "%l: %C, %t, 湿度%h, 风%w",
+        "lang": "en" if english else "zh",
     })
     url = "https://wttr.in/" + urllib.parse.quote(slug) + "?" + query
     last_exc = None
@@ -62,9 +67,9 @@ def query_weather(city_slug: str, timeout: float = 12.0) -> str:
                 text = resp.read().decode("utf-8", "replace").strip()
             if not text:
                 raise RuntimeError("empty weather reply")
-            zh = CITY_ZH.get(slug, slug)
-            line = text.replace(slug, zh, 1) if text.startswith(slug) else f"{zh}: {text}"
-            LOG.info("WEATHER city=%s -> %s", slug, line)
+            city = slug if english else CITY_ZH.get(slug, slug)
+            line = text.replace(slug, city, 1) if text.startswith(slug) else f"{city}: {text}"
+            LOG.info("WEATHER city=%s lang=%s -> %s", slug, "en" if english else "zh", line)
             return line
         except Exception as exc:  # noqa: BLE001 - retry on any fetch failure
             last_exc = exc

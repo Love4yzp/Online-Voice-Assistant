@@ -67,7 +67,7 @@ curl -s http://127.0.0.1:8090/lang                            # 读当前语言
 | 讲解选版 | 显式 `lang`（`POST /inject {...,"lang":"en"}`）优先；否则用**现场切换过的语言**（状态文件，或特意配成非默认的 `dialogue_lang`）；都没指定时**仍按关键词语言**（`介绍一下智慧零售`→中文、`introduce smart retail`→英文），与语音链路的历史行为一致 |
 | LLM 回答（`engine=pipeline`） | `reply_lang` 透传给引擎；`en` 时 system prompt 换成**独立英文人设** `EN_SYSTEM_PROMPT`（不再在中文人设后追加英文句，见下文“为什么换人设”），`zh`/未设定保持原中文口径 byte for byte |
 | 英文兜底 | EN 模式下模型仍回中文（中文占比 ≥ `LANG_RETRY_CJK_RATIO=0.2`）时，`ensure_reply_language()` 追加一轮 assistant/user 提醒重问一次；只重试一次，失败就用重试结果，日志 `LANG_RETRY` |
-| 天气工具轮 | 复用同一份 system message，所以工具查完后的总结也是同一语言 |
+| 天气工具轮 | 与对话共用同一语言：英文模式查询 wttr.in 的英文天气并给 LLM 英文事实，中文模式保持原中文模板；工具失败提示也跟随当前语言 |
 | 语音链路 | 与注入文本共用 `_playback_from_text()`，所以"切到英文后说中文关键词"同样会播英文讲解 |
 | 固定兜底音 | `dialogue.play_asset()` 按当前或注入请求显式语言选择 `fallback/*_en.wav`；找不到英文文件会记录警告并播放中文原件。没听清、换个问题、网络异常和可选“好的”缓冲音都有英文录音 |
 | `engine=e2e`（GLM-4-Voice） | **不跟随**：音频进音频出，语言由模型自己决定（见已知限制） |
@@ -126,8 +126,9 @@ curl -s http://127.0.0.1:8090/lang                            # 读当前语言
     讲解分支用 `lang or ova.lang.chosen(cfg)` 选变体，聊天分支传 `{**cfg, "reply_lang": effective}`。
   - `play_asset()`：所有固定兜底音都按本轮语言选择 `*_en.wav`；注入请求的显式语言优先，缺失英文文件回退中文。
 - `src/ova/llm.py`：`system_prompt(lang=None)` 在英文时返回独立 `EN_SYSTEM_PROMPT`（可用 `QWEN_SYSTEM_PROMPT_EN` 覆盖），中文继续用 `SYSTEM_PROMPT`（`QWEN_SYSTEM_PROMPT` 可覆盖）；`chat()` 行为不变。
-- `src/ova/engines/pipeline.py`：`ask_with_weather(text, lang=None)` 用 `system_prompt(lang)`；
+- `src/ova/engines/pipeline.py`：`ask_with_weather(text, lang=None)` 用 `system_prompt(lang)`，并把该语言传给天气工具；
   `PipelineEngine.respond()` 从 `cfg["reply_lang"]` 取语言（`QWEN_REPLY` 日志带 `lang=`）。
+- `src/ova/tools.py`：`query_weather(city_slug, lang=...)` 中英文分别用对应的 wttr.in 模板，单独运行的调试台仍默认为中文。
 - `src/ova/wake.py`：`DEFAULTS` / `ENV_MAP` 加 `dialogue_lang`、`dialogue_lang_file`。
 - `config/hardware/reachy-mini.json`、`config/example.json`：记录两个新参数。
 - `tests/test_lang.py`、`tests/test_inject.py`、`tests/test_engines.py`：见下。
